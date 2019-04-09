@@ -1,3 +1,15 @@
+------------------------------------------------------------------------------
+--                                                                          --
+--  Syntax                                                                  --
+--                                                                          --
+------------------------------------------------------------------------------
+
+-- This file gives the lexical structure, raw unscoped syntax
+-- and de Bruijn syntaxes for terms in our calculus.
+
+-- The syntax is not remotely sophisticated.
+
+
 {-# LANGUAGE PatternGuards #-}
 
 module Syntax where
