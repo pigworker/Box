@@ -17,6 +17,7 @@ module Syntax where
 import Prelude hiding (lex)
 import Data.Char
 import Data.List
+import Data.Either
 import Control.Applicative
 import Control.Monad
 
@@ -36,7 +37,7 @@ data Tok
 data Brk = Round | Square | Curly deriving (Show, Eq)
 
 solo :: String -- these are only ever tokens by themselves
-solo = ",;?"
+solo = ",;?!"
 
  -- detect chars which may occur consecutively in symbol tokens
 isSym :: Char -> Bool
@@ -114,6 +115,9 @@ eat f = Parse $ \ ts -> case ts of
 tok :: Tok -> Tok -> Maybe ()  -- use like (eat (tok (TokS x)))
 tok a b = guard (a == b)
 
+punc :: String -> Parse ()
+punc x = eat (tok (TokS x))
+
 nom :: Tok -> Maybe String     -- use like (eat nom)
 nom (TokI x) = Just x
 nom _ = Nothing
@@ -131,19 +135,20 @@ sep s p = (:) <$> p <*> more
 ------------------------------------------------------------------------------
 
 data Raw
-  = String :! [(Raw,Raw)]      -- foo[r10-r11,...,rn0-rn1]
+  = RA String                  -- atoms
+  | Raw :! [(Raw,Raw)]         -- r[r10-r11,...,rn0-rn1]  -- nonempty
   | Raw :$ [Raw]               -- r r1 ... rn    (n >= 1)
   | String :. Raw              -- x.r  (value abstraction)
   | String :- Raw              -- x|r  (dimension abstraction)
   | RadR Raw [(Raw,Raw)] Raw   -- r : [r10-r11,...,rn0-rn1] R
   | MetR String [String]       -- ?m-x1...-xn  (metavars excluding dependency)
+  | MepR String [String]       -- !m-i1-...-ik (metadimensions ditto)
   deriving Show
 
-extn :: Parse [(Raw, Raw)]     -- exterior of n-dimensional thing
-extn = id <$ eat (tok (TokO Square "")) <*>
-  sep (TokS ",") ((,) <$> raw <* eat (tok (TokS "-")) <*> raw) <*
+exterior :: Parse [(Raw, Raw)]     -- exterior of n-dimensional thing
+exterior = id <$ eat (tok (TokO Square "")) <*>
+  sep (TokS ",") ((,) <$> raw <* punc "-" <*> raw) <*
   eat (tok (TokC "" Square))
-  <|> pure []
 
 -- The recurring pattern is to write helper functions being
 -- (i)  a smart constructor which assembles a term from a prefix and a suffix
@@ -162,71 +167,70 @@ huge = rad <$> raw <*> radex where
   rad t (Just (ts, ty)) = RadR t ts ty
   rad t Nothing = t
   radex :: Parse (Maybe ([(Raw,Raw)], Raw))  -- radicals, rightward from colon
-  radex =  Just <$ eat (tok (TokS ":")) <*> ((,) <$> extn <*> raw)
+  radex =  Just <$ punc ":" <*> ((,) <$> (exterior <|> pure []) <*> raw)
        <|> pure Nothing -- it turns out it wasn't a radical, after all
 
-wee :: Parse Raw  -- things which don't need parentheses
-wee = id <$ eat (tok (TokO Round "")) <*> huge <* eat (tok (TokC "" Round))
-  <|> glom <$> eat nom <*> suff
-  <|> MetR <$ eat (tok (TokS "?")) <*> eat nom <*>
-       many (id <$ eat (tok (TokS "-")) <*> eat nom)
+wee :: Parse Raw
+wee = flip ($) <$> atom <*> (flip (:!) <$> exterior <|> pure id)
+
+atom :: Parse Raw  -- things which don't need parentheses
+atom = id <$ eat (tok (TokO Round "")) <*> huge <* eat (tok (TokC "" Round))
+  <|> flip ($) <$> eat nom <*> bind
+  <|> (MetR <$ punc "?" <|> MepR <$ punc "!") <*> eat nom
+      <*> many (id <$ punc "-" <*> eat nom)
   where
-  glom :: String  -- identifier
-       -> Either  -- what comes after an identifier?
-            (Bool, Raw)  -- a binder (. or |) and its scope?
-            [(Raw, Raw)] -- a bunch of scalings/boundaries
-       -> Raw     -- smart constructor   
-  glom x (Left (True, t))  = x :. t
-  glom x (Left (False, t)) = x :- t
-  glom x (Right ts) = x :! ts
-  suff :: Parse (Either (Bool, Raw) [(Raw, Raw)])
-  suff =  Left <$> ((,) <$>
-             (True <$ eat (tok (TokS ".")) <|> False <$ eat (tok (TokS "|")))
-              <*> raw)
-     <|>  Right <$> extn
+  bind :: Parse (String -> Raw)
+  bind = flip <$> ((:.) <$ punc "." <|> (:-) <$ punc "|") <*> raw
+     <|> pure RA
 
 
 ------------------------------------------------------------------------------
 -- Points and their smart constructors
 ------------------------------------------------------------------------------
 
-data Poi        -- points in normal form
-  = P0 | P1     -- endpoints
-  | PS Poi      -- weakening (no dependence on most local dimension)
-  | PI Poi Poi  -- conditional on most local dimension; cases in shorter scope
+data Poi           -- points in normal form
+  = P0 | P1        -- endpoints
+  | PS Poi         -- weakening (no dependence on most local dimension)
+  | PI (Poi, Poi)  -- conditional on most local dimension, not in cases' scope
+  | PM String [Poi] (Poi, Poi)  -- metavariable usage
   deriving (Show, Eq)
+
+-- What is going on with points and metadimensions?
+-- PM must never occur inside PI or PS.
+
+pzero :: Poi
+pzero = PI (P0, P1)
 
 -- smart constructor ensuring we never weaken an endpoint
 psuc :: Poi -> Poi
-psuc P0 = P0
-psuc P1 = P1
-psuc p = PS p
+psuc P0     = P0
+psuc P1     = P1
+psuc p      = PS p
 
 -- smart constructor ensuring conditionals actually matter
-pif0 :: Poi -> Poi -> Poi
-pif0 p0 p1 | p0 == p1  = psuc p0  -- no choice, weaken instead
-           | otherwise = PI p0 p1
+pif0 :: (Poi, Poi) -> Poi
+pif0 (p0, p1) | p0 == p1  = psuc p0  -- no choice, weaken instead
+pif0 pp                   = PI pp
 
 -- rescaling p[p0-p1] where each is normal, restoring normality
 scale :: Poi -> (Poi, Poi) -> Poi
+scale _ (p0, p1) | p0 == p1 = p0
+scale (PM m ps (m0, m1)) pp = PM m ps (scale m0 pp, scale m1 pp)
 scale P0 (p0, p1) = p0
 scale P1 (p0, p1) = p1
-scale _ (p0, p1) | p0 == p1 = p0
 scale (PS p) (PS p0, PS p1)  -- definitely no dependency on most local
   = psuc (scale p (p0, p1))  -- so weaken
 scale p (p0, p1)             -- definitely some dependency on most local
   = pif0  -- so branch on most local
-      (scale (pr0 p) (pr0 p0, pr0 p1)) -- specialise to most local 0
-      (scale (pr1 p) (pr1 p0, pr1 p1)) -- specialise to most local 1
+      ( scale (pr0 p) (pr0 p0, pr0 p1) -- specialise to most local 0
+      , scale (pr1 p) (pr1 p0, pr1 p1) -- specialise to most local 1
+      )
   where
-  -- pr0 specialises most local to 0
-  pr0 (PS p)   = p -- no dependency
-  pr0 (PI p _) = p -- choose 0 branch
-  pr0 p        = p -- endpoint
-  -- pr1 specialises most local to 1
-  pr1 (PS p)   = p -- no dependency
-  pr1 (PI _ p) = p -- choose 1 branch
-  pr1 p        = p -- endpoint
+  pr0 = pr fst; pr1 = pr snd
+  -- pr specialises most local to a projection
+  pr f (PS p)  = p -- no dependency
+  pr f (PI pp) = f pp -- choose f branch
+  pr f p       = p -- endpoint
 
 
 ------------------------------------------------------------------------------
@@ -246,6 +250,19 @@ mkThin [] _ = 0
 mkThin (x : xs) ys | elem x ys = 2 * mkThin xs ys     -- excluded, emit 0
                    | otherwise = 2 * mkThin xs ys + 1 -- included, emit 1
 
+type Sbsn = ([Poi], [Syn])
+
+idSb :: Scope -> Sbsn
+idSb (is, xs) =
+  ( zipWith const (iterate PS pzero) is
+  , zipWith (const . Var) [0..] xs
+  )
+
+can :: (Raw -> Maybe x) -> Raw -> Maybe (String, [x])
+can f (RA c)    = pure (c, [])
+can f (r :$ rs) = (\ (c, ts) us -> (c, ts ++ us)) <$> can f r <*> traverse f rs
+can _ _ = Nothing
+
 
 -- Patterns
 
@@ -259,40 +276,41 @@ data Pat
          ( Integer -- dimension bitwise selection
          , Integer -- variable bitwise selection
          )
+  | PMep String Integer  -- metadimension binding site
   deriving Show
 
 pat :: Scope -> Raw -> Maybe Pat
 pat (is, xs) (MetR m us) = pure (PMet m (mkThin is us, mkThin xs us))
+pat (is, _)  (MepR m us) = pure (PMep m (mkThin is us))
 pat (is, xs) (x :. r) = PAbs <$> pat (is, x : xs) r
 pat (is, xs) (i :- r) = PHiD <$> pat (i : is, xs) r
-pat g (c :! []) = pure (PCan c [])
-pat g ((c :! []) :$ rs) = PCan c <$> traverse (pat g) rs
-
+pat _ (RA "0") = pure Pat0
+pat _ (RA "1") = pure Pat1
+pat g r = uncurry PCan <$> can (pat g) r
 
 -- Checkable terms
 
 data Chk
-  = Can String [Chk]   -- canonical
-  | Abs Chk            -- variable abstraction
-  | HiD Chk            -- dimension abstraction
-  | Syn Syn            -- synthesizable
-  | Poi Poi            -- point
-  | String :? [Chk]    -- metavariable use site, with substitution
+  = Can String [Chk]  -- canonical
+  | Abs Chk           -- variable abstraction
+  | HiD Chk           -- dimension abstraction
+  | Syn Syn           -- synthesizable
+  | Poi Poi           -- point
+  | String :? Sbsn    -- metavariable use site, with substitution
   deriving Show
 
 chk :: Scope -> Raw -> Maybe Chk
 chk (is, xs) (x :. r) = Abs <$> chk (is, x : xs) r
 chk (is, xs) (i :- r) = HiD <$> chk (i : is, xs) r
-chk g (MetR x _) = pure (x :? [])
-chk g (MetR x _ :$ rs) = (x :?) <$> traverse (chk g) rs
+chk g (MetR x _) = pure (x :? idSb g)
+chk g (MetR x _ :$ rs) = ((x :?) . partitionEithers) <$> traverse stan rs
+  where
+  stan :: Raw -> Maybe (Either Poi Syn)
+  stan r = Left  <$> poi g r
+       <|> Right <$> syn g r
 chk g r = Poi <$> poi g r
       <|> Syn <$> syn g r
-      <|> id  <$> can g r
-
-can :: Scope -> Raw -> Maybe Chk
-can g (c :! []) = pure (Can c [])
-can g ((c :! []) :$ rs) = Can c <$> traverse (chk g) rs
-can _ _ = Nothing
+      <|> uncurry Can <$> can (chk g) r
 
 
 -- Synthesizable terms
@@ -304,7 +322,7 @@ data Syn
   deriving Show
 
 syn :: Scope -> Raw -> Maybe Syn
-syn (is, xs) (x :! []) | Just n <- findIndex (x ==) xs = pure (Var n)
+syn (is, xs) (RA x) | Just n <- findIndex (x ==) xs = pure (Var n)
 syn g (RadR t ts ty) =
   Rad <$> chk g t <*> traverse chks ts <*> chk g ty
   where
@@ -316,16 +334,18 @@ syn _ _ = Nothing
 -- Points
 
 poi :: Scope -> Raw -> Maybe Poi
-poi g@(is, _) (i :! ts) = foldl scale <$> poix is i <*> pois ts where
+poi g@(is, _) (RA i) = poix is i where
   poix _  "0" = Just P0
   poix _  "1" = Just P1
   poix [] _   = Nothing
-  poix (i : is) j | i == j = Just (PI P0 P1)  -- top var, branch over endpoints
-  poix (i : is) j = psuc <$> poix is j        -- not top var, so weaken
-  pois [] = pure []
-  pois ((t0, t1) : ts) = (:) <$> ((,) <$> poi g t0 <*> poi g t1) <*> pois ts
+  poix (i : is) j | i == j = Just pzero  -- top var, branch over endpoints
+  poix (i : is) j = psuc <$> poix is j   -- not top var, so weaken
+poi g@(is, _) (MepR m []) = pure (PM m [] (P0, P1))
+poi g@(is, _) (MepR m [] :$ rs) =
+  PM m <$> traverse (poi g) rs <*> pure (P0, P1)
+poi g (r :! rrs) = foldl scale <$> poi g r <*> traverse pois rrs where
+  pois (t0, t1) = (,) <$> poi g t0 <*> poi g t1
 poi _ _ = Nothing
-
 
 
 ------------------------------------------------------------------------------
