@@ -98,9 +98,9 @@ instance Inst Chk where
   Poi p     ?% sbst = Poi (p ?% sbst)
 
 instance Inst Syn where
-  Var i       ?% sbst = Var i
-  (e :/ s)    ?% sbst = (e ?% sbst) :/ (s ?% sbst)
-  Rad t ts ty ?% sbst = Rad (t ?% sbst) (ts ?% sbst) (ty ?% sbst)
+  Var i    ?% sbst = Var i
+  (e :/ s) ?% sbst = (e ?% sbst) :/ (s ?% sbst)
+  Rad t ty ?% sbst = Rad (t ?% sbst) (ty ?% sbst)
 
 instance Inst Poi where
   PM m ps pp ?% sbst@(sb, (mds, _))
@@ -148,11 +148,11 @@ wkpos ps = supos ps
          :< pzero           -- top dimension
 
 instance Sbst Syn where
-  Var i       % (_, es) = case B.elemAt i es of
+  Var i    % (_, es) = case B.elemAt i es of
     Nothing -> error "IMPOSSIBLE"
     Just e  -> e
-  (e :/ s)    % sb      = (e % sb) :/ (s % sb)
-  Rad t ts ty % sb      = Rad (t % sb) (ts % sb) (ty % sb)
+  (e :/ s) % sb      = (e % sb) :/ (s % sb)
+  Rad t ty % sb      = Rad (t % sb) (ty % sb)
 
 instance Sbst Poi where
   PM m ps pp % sb = PM m (ps % sb) (pp % sb)
@@ -232,12 +232,12 @@ wkth :: Integer -> Integer
 wkth th = shift th 1 .|. 1
 
 instance Thin Syn where
-  Var n       ^ dhth = Var (n ^ dhth)
-  (e :/ s)    ^ dhth = (e ^ dhth) :/ (s ^ dhth)
-  Rad t ts ty ^ dhth = Rad (t ^ dhth) (ts ^ dhth) (ty ^ dhth)
-  dhth ?^ Var n       = Var <$> (dhth ?^ n)
-  dhth ?^ (e :/ s)    = (:/) <$> (dhth ?^ e) <*> (dhth ?^ s)
-  dhth ?^ Rad t ts ty = Rad <$> (dhth ?^ t) <*> (dhth ?^ ts) <*> (dhth ?^ ty)
+  Var n    ^ dhth = Var (n ^ dhth)
+  (e :/ s) ^ dhth = (e ^ dhth) :/ (s ^ dhth)
+  Rad t ty ^ dhth = Rad (t ^ dhth) (ty ^ dhth)
+  dhth ?^ Var n    = Var <$> (dhth ?^ n)
+  dhth ?^ (e :/ s) = (:/) <$> (dhth ?^ e) <*> (dhth ?^ s)
+  dhth ?^ Rad t ty = Rad <$> (dhth ?^ t) <*> (dhth ?^ ty)
 
 instance Thin x => Thin (Bwd x) where
   ts ^ dhth = fmap (^ dhth) ts

@@ -153,7 +153,7 @@ data Raw
   | Raw :$ [Raw]                  -- r r1 ... rn    (n >= 1)
   | String :. Raw                 -- x.r  (value abstraction)
   | String :- Raw                 -- x|r  (dimension abstraction)
-  | RadR Raw (Boundary Raw) Raw   -- r : [r10-r11,...,rn0-rn1] R
+  | RadR Raw Raw                  -- r : R
   | MetR String [String]          -- ?m-x1...-xn  (metavars excluding dependency)
   | MepR String [String]          -- !m-i1-...-ik (metadimensions ditto)
   deriving Show
@@ -174,13 +174,10 @@ raw = app <$> wee <*> many wee where
   app t ts = t :$ ts
 
 huge :: Parse Raw              -- anything, including radicals
-huge = rad <$> raw <*> radex where
-  rad :: Raw -> Maybe (Boundary Raw, Raw) -> Raw  -- radical smart constructor
-  rad t (Just (ts, ty)) = RadR t ts ty
-  rad t Nothing = t
-  radex :: Parse (Maybe (Boundary Raw, Raw))  -- radicals, rightward from colon
-  radex =  Just <$ punc ":" <*> ((,) <$> (exterior <|> pure (B B0)) <*> raw)
-       <|> pure Nothing -- it turns out it wasn't a radical, after all
+huge = flip ($) <$> raw <*> radex where
+  radex :: Parse (Raw -> Raw)  -- radicals, rightward from colon
+  radex =  flip RadR <$ punc ":" <*> raw
+       <|> pure id -- it turns out it wasn't a radical, after all
 
 wee :: Parse Raw
 wee = flip ($) <$> atom <*> (flip (:!) <$> exterior <|> pure id)
@@ -344,16 +341,16 @@ chk g r = Poi <$> poi g r
 -- Synthesizable terms
 
 data Syn
-  = Var !Int                   -- de Bruijn variable
-  | Syn :/ Chk                 -- elim form
-  | Rad Chk (Boundary Chk) Chk -- radical
+  = Var !Int    -- de Bruijn variable
+  | Syn :/ Chk  -- elim form
+  | Rad Chk Chk -- radical
   deriving Show
 
 syn :: Scope -> Raw -> Maybe Syn
 syn (_, xs) (RA x) = Var <$> foldr checkVar Nothing xs where
   checkVar here there | x == here = Just 0
                       | otherwise = (1+) <$> there
-syn g (RadR t ts ty) = Rad <$> chk g t <*> traverse (chk g) ts <*> chk g ty
+syn g (RadR t ty) = Rad <$> chk g t <*> chk g ty
 syn g (r :$ rs) = foldl (:/) <$> syn g r <*> traverse (chk g) rs
 syn _ _ = Nothing
 
