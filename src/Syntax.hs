@@ -9,8 +9,10 @@
 
 -- The syntax is not remotely sophisticated.
 
-
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveFoldable    #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE PatternGuards     #-}
 
 module Syntax where
 
@@ -18,7 +20,11 @@ import Prelude hiding (lex)
 import Data.Char
 import Data.List
 import Data.Either
+import Data.Backwards as B
+import Data.Pair
+import Data.Traversable
 import Control.Applicative
+import Control.Arrow
 import Control.Monad
 
 ------------------------------------------------------------------------------
@@ -117,6 +123,12 @@ tok a b = guard (a == b)
 punc :: String -> Parse ()
 punc x = eat (tok (TokS x))
 
+between :: Tok -> Tok -> Parse a -> Parse a
+between topen tclose p = eat (tok topen) *> p <* eat (tok tclose)
+
+parens :: Brk -> Parse a -> Parse a
+parens brk = between (TokO brk "") (TokC "" brk)
+
 nom :: Tok -> Maybe String     -- use like (eat nom)
 nom (TokI x) = Just x
 nom _ = Nothing
@@ -132,21 +144,23 @@ sep s p = (:) <$> p <*> more
 -- Raw unscoped syntax
 ------------------------------------------------------------------------------
 
+newtype Boundary a = B { outB :: Bwd (Pair a) }
+  deriving (Show, Eq, Functor, Foldable, Traversable)
+
 data Raw
-  = RA String                  -- atoms
-  | Raw :! [(Raw,Raw)]         -- r[r10-r11,...,rn0-rn1]  -- nonempty
-  | Raw :$ [Raw]               -- r r1 ... rn    (n >= 1)
-  | String :. Raw              -- x.r  (value abstraction)
-  | String :- Raw              -- x|r  (dimension abstraction)
-  | RadR Raw [(Raw,Raw)] Raw   -- r : [r10-r11,...,rn0-rn1] R
-  | MetR String [String]       -- ?m-x1...-xn  (metavars excluding dependency)
-  | MepR String [String]       -- !m-i1-...-ik (metadimensions ditto)
+  = RA String                     -- atoms
+  | Raw :! Boundary Raw           -- r[r10-r11,...,rn0-rn1]  -- nonempty
+  | Raw :$ [Raw]                  -- r r1 ... rn    (n >= 1)
+  | String :. Raw                 -- x.r  (value abstraction)
+  | String :- Raw                 -- x|r  (dimension abstraction)
+  | RadR Raw (Boundary Raw) Raw   -- r : [r10-r11,...,rn0-rn1] R
+  | MetR String [String]          -- ?m-x1...-xn  (metavars excluding dependency)
+  | MepR String [String]          -- !m-i1-...-ik (metadimensions ditto)
   deriving Show
 
-exterior :: Parse [(Raw, Raw)]     -- exterior of n-dimensional thing
-exterior = id <$ eat (tok (TokO Square "")) <*>
-  sep (TokS ",") ((,) <$> raw <* punc "-" <*> raw) <*
-  eat (tok (TokC "" Square))
+exterior :: Parse (Boundary Raw)     -- exterior of n-dimensional thing
+exterior = parens Square
+         $ B . fromList <$> sep (TokS ",") (P <$> raw <* punc "-" <*> raw)
 
 -- The recurring pattern is to write helper functions being
 -- (i)  a smart constructor which assembles a term from a prefix and a suffix
@@ -161,26 +175,27 @@ raw = app <$> wee <*> many wee where
 
 huge :: Parse Raw              -- anything, including radicals
 huge = rad <$> raw <*> radex where
-  rad :: Raw -> Maybe ([(Raw,Raw)], Raw) -> Raw  -- radical smart constructor
+  rad :: Raw -> Maybe (Boundary Raw, Raw) -> Raw  -- radical smart constructor
   rad t (Just (ts, ty)) = RadR t ts ty
   rad t Nothing = t
-  radex :: Parse (Maybe ([(Raw,Raw)], Raw))  -- radicals, rightward from colon
-  radex =  Just <$ punc ":" <*> ((,) <$> (exterior <|> pure []) <*> raw)
+  radex :: Parse (Maybe (Boundary Raw, Raw))  -- radicals, rightward from colon
+  radex =  Just <$ punc ":" <*> ((,) <$> (exterior <|> pure (B B0)) <*> raw)
        <|> pure Nothing -- it turns out it wasn't a radical, after all
 
 wee :: Parse Raw
 wee = flip ($) <$> atom <*> (flip (:!) <$> exterior <|> pure id)
 
 atom :: Parse Raw  -- things which don't need parentheses
-atom = id <$ eat (tok (TokO Round "")) <*> huge <* eat (tok (TokC "" Round))
-  <|> flip ($) <$> eat nom <*> bind
-  <|> (MetR <$ punc "?" <|> MepR <$ punc "!") <*> eat nom
-      <*> many (id <$ punc "-" <*> eat nom)
+atom = parens Round huge
+   <|> flip ($) <$> eat nom <*> bind
+   <|> meta <*> eat nom <*> many (id <$ punc "-" <*> eat nom)
   where
   bind :: Parse (String -> Raw)
   bind = flip <$> ((:.) <$ punc "." <|> (:-) <$ punc "|") <*> raw
      <|> pure RA
 
+  meta :: Parse (String -> [String] -> Raw)
+  meta = MetR <$ punc "?" <|> MepR <$ punc "!"
 
 ------------------------------------------------------------------------------
 -- Points and their smart constructors
@@ -189,15 +204,16 @@ atom = id <$ eat (tok (TokO Round "")) <*> huge <* eat (tok (TokC "" Round))
 data Poi           -- points in normal form
   = P0 | P1        -- endpoints
   | PS Poi         -- weakening (no dependence on most local dimension)
-  | PI (Poi, Poi)  -- conditional on most local dimension, not in cases' scope
-  | PM String [Poi] (Poi, Poi)  -- metavariable usage
+  | PI (Pair Poi)  -- conditional on most local dimension, not in cases' scope
+  | PM String (Bwd Poi) (Pair Poi)  -- metavariable usage
   deriving (Show, Eq)
 
 -- What is going on with points and metadimensions?
 -- PM must never occur inside PI or PS.
 
+-- top variable: branch over endpoints
 pzero :: Poi
-pzero = PI (P0, P1)
+pzero = PI (P P0 P1)
 
 -- smart constructor ensuring we never weaken an endpoint
 psuc :: Poi -> Poi
@@ -206,29 +222,30 @@ psuc P1     = P1
 psuc p      = PS p
 
 -- smart constructor ensuring conditionals actually matter
-pif0 :: (Poi, Poi) -> Poi
-pif0 (p0, p1) | p0 == p1  = psuc p0  -- no choice, weaken instead
-pif0 pp                   = PI pp
+pif0 :: Pair Poi -> Poi
+pif0 (P p0 p1) | p0 == p1  = psuc p0  -- no choice, weaken instead
+pif0 pp                    = PI pp
 
 -- rescaling p[p0-p1] where each is normal, restoring normality
-scale :: Poi -> (Poi, Poi) -> Poi
-scale _ (p0, p1) | p0 == p1 = p0
-scale (PM m ps (m0, m1)) pp = PM m ps (scale m0 pp, scale m1 pp)
-scale P0 (p0, p1) = p0
-scale P1 (p0, p1) = p1
-scale (PS p) (PS p0, PS p1)  -- definitely no dependency on most local
-  = psuc (scale p (p0, p1))  -- so weaken
-scale p (p0, p1)             -- definitely some dependency on most local
-  = pif0  -- so branch on most local
-      ( scale (pr0 p) (pr0 p0, pr0 p1) -- specialise to most local 0
-      , scale (pr1 p) (pr1 p0, pr1 p1) -- specialise to most local 1
-      )
+scale :: Poi -> Pair Poi -> Poi
+scale _ (P p0 p1) | p0 == p1 = p0
+scale (PM m ps (P m0 m1)) pp = PM m ps $ P (scale m0 pp) (scale m1 pp)
+scale P0 (P p0 p1) = p0
+scale P1 (P p0 p1) = p1
+scale (PS p) (P (PS p0) (PS p1))  -- definitely no dependency on most local
+  = psuc (scale p (P p0 p1))      -- so weaken
+scale p (P p0 p1)  -- definitely some dependency on most local
+  = pif0 $ P       -- so branch on most local
+      (branch pr0) -- specialise to most local 0
+      (branch pr1) -- specialise to most local 1
   where
-  pr0 = pr fst; pr1 = pr snd
+  -- branch specialises scale to most local's projection
+  branch prj = scale (prj p) (P (prj p0) (prj p1))
+  pr0 = pr proj0; pr1 = pr proj1
   -- pr specialises most local to a projection
-  pr f (PS p)  = p -- no dependency
+  pr f (PS p)  = p    -- no dependency
   pr f (PI pp) = f pp -- choose f branch
-  pr f p       = p -- endpoint
+  pr f p       = p    -- endpoint
 
 
 ------------------------------------------------------------------------------
@@ -237,35 +254,47 @@ scale p (p0, p1)             -- definitely some dependency on most local
 
 -- General equipment
 
-type Scope = ( [String]  -- names of dimensions [local,..,global]
-             , [String]  -- names of variables  [local,..,global]
-             ) -- yuk; should use backward lists
+type Scope = ( Bwd String  -- names of dimensions [local,..,global]
+             , Bwd String  -- names of variables  [local,..,global]
+             )
 
-mkThin :: [String]  -- scope
-       -> [String]  -- excluded names
-       -> Integer   -- bitwise selection
-mkThin [] _ = 0
-mkThin (x : xs) ys | elem x ys = 2 * mkThin xs ys     -- excluded, emit 0
-                   | otherwise = 2 * mkThin xs ys + 1 -- included, emit 1
+mkThin :: Bwd String  -- scope
+       -> [String]    -- excluded names
+       -> Integer     -- bitwise selection
+mkThin scp excluded = foldr step 0 scp where
+  step :: String -> Integer -> Integer
+  step x i
+    | x `elem` excluded = 2 * i     -- excluded, emit 0
+    | otherwise         = 2 * i + 1 -- included, emit 1
 
-type Sbsn = ([Poi], [Syn])
+type Sbsn = (Bwd Poi, Bwd Syn)
 
+-- Infinite id point substitution
+poid :: Bwd Poi
+poid = B.iterate PS pzero
+
+-- Infinite synthesizable substitution
+syid :: Bwd Syn
+syid = Var <$> fromList [0..]
+
+-- Finite substitution, matching the size of a given scope
 idSb :: Scope -> Sbsn
 idSb (is, xs) =
-  ( zipWith const (iterate PS pzero) is
-  , zipWith (const . Var) [0..] xs
+  ( poid <* is
+  , syid <* xs
   )
 
-can :: (Raw -> Maybe x) -> Raw -> Maybe (String, [x])
-can f (RA c)    = pure (c, [])
-can f (r :$ rs) = (\ (c, ts) us -> (c, ts ++ us)) <$> can f r <*> traverse f rs
+can :: (Raw -> Maybe x) -> Raw -> Maybe (String, Bwd x)
+can f (RA c)    = pure (c, B0)
+can f (r :$ rs) = (\ (c, ts) us -> (c, mappend ts $ fromList us))
+              <$> can f r <*> traverse f rs
 can _ _ = Nothing
 
 
 -- Patterns
 
 data Pat
-  = PCan String [Pat]               -- canonical
+  = PCan String (Bwd Pat)           -- canonical
   | PAbs Pat                        -- variable abstraction
   | PHiD Pat                        -- dimension abstraction
   | Pat0                            -- point 0
@@ -280,8 +309,8 @@ data Pat
 pat :: Scope -> Raw -> Maybe Pat
 pat (is, xs) (MetR m us) = pure (PMet m (mkThin is us, mkThin xs us))
 pat (is, _)  (MepR m us) = pure (PMep m (mkThin is us))
-pat (is, xs) (x :. r) = PAbs <$> pat (is, x : xs) r
-pat (is, xs) (i :- r) = PHiD <$> pat (i : is, xs) r
+pat (is, xs) (x :. r) = PAbs <$> pat (is, xs :< x) r
+pat (is, xs) (i :- r) = PHiD <$> pat (is :< i, xs) r
 pat _ (RA "0") = pure Pat0
 pat _ (RA "1") = pure Pat1
 pat g r = uncurry PCan <$> can (pat g) r
@@ -289,19 +318,20 @@ pat g r = uncurry PCan <$> can (pat g) r
 -- Checkable terms
 
 data Chk
-  = Can String [Chk]  -- canonical
-  | Abs Chk           -- variable abstraction
-  | HiD Chk           -- dimension abstraction
-  | Syn Syn           -- synthesizable
-  | Poi Poi           -- point
-  | String :? Sbsn    -- metavariable use site, with substitution
+  = Can String (Bwd Chk) -- canonical
+  | Abs Chk              -- variable abstraction
+  | HiD Chk              -- dimension abstraction
+  | Syn Syn              -- synthesizable
+  | Poi Poi              -- point
+  | String :? Sbsn       -- metavariable use site, with substitution
   deriving Show
 
 chk :: Scope -> Raw -> Maybe Chk
-chk (is, xs) (x :. r) = Abs <$> chk (is, x : xs) r
-chk (is, xs) (i :- r) = HiD <$> chk (i : is, xs) r
+chk (is, xs) (x :. r) = Abs <$> chk (is, xs :< x) r
+chk (is, xs) (i :- r) = HiD <$> chk (is :< i, xs) r
 chk g (MetR x _) = pure (x :? idSb g)
-chk g (MetR x _ :$ rs) = ((x :?) . partitionEithers) <$> traverse stan rs
+chk g (MetR x _ :$ rs) = ((x :?) . (fromList *** fromList) . partitionEithers)
+                     <$> traverse stan rs
   where
   stan :: Raw -> Maybe (Either Poi Syn)
   stan r = Left  <$> poi g r
@@ -314,17 +344,16 @@ chk g r = Poi <$> poi g r
 -- Synthesizable terms
 
 data Syn
-  = Var Int                   -- de Bruijn variable
-  | Syn :/ Chk                -- elim form
-  | Rad Chk [(Chk, Chk)] Chk  -- radical
+  = Var !Int                   -- de Bruijn variable
+  | Syn :/ Chk                 -- elim form
+  | Rad Chk (Boundary Chk) Chk -- radical
   deriving Show
 
 syn :: Scope -> Raw -> Maybe Syn
-syn (is, xs) (RA x) | Just n <- findIndex (x ==) xs = pure (Var n)
-syn g (RadR t ts ty) =
-  Rad <$> chk g t <*> traverse chks ts <*> chk g ty
-  where
-    chks (r0, r1) = (,) <$> chk g r0 <*> chk g r1
+syn (_, xs) (RA x) = Var <$> foldr checkVar Nothing xs where
+  checkVar here there | x == here = Just 0
+                      | otherwise = (1+) <$> there
+syn g (RadR t ts ty) = Rad <$> chk g t <*> traverse (chk g) ts <*> chk g ty
 syn g (r :$ rs) = foldl (:/) <$> syn g r <*> traverse (chk g) rs
 syn _ _ = Nothing
 
@@ -332,19 +361,17 @@ syn _ _ = Nothing
 -- Points
 
 poi :: Scope -> Raw -> Maybe Poi
-poi g@(is, _) (RA i) = poix is i where
-  poix _  "0" = Just P0
-  poix _  "1" = Just P1
-  poix [] _   = Nothing
-  poix (i : is) j | i == j = Just pzero  -- top var, branch over endpoints
-  poix (i : is) j = psuc <$> poix is j   -- not top var, so weaken
-poi g@(is, _) (MepR m []) = pure (PM m [] (P0, P1))
-poi g@(is, _) (MepR m [] :$ rs) =
-  PM m <$> traverse (poi g) rs <*> pure (P0, P1)
-poi g (r :! rrs) = foldl scale <$> poi g r <*> traverse pois rrs where
-  pois (t0, t1) = (,) <$> poi g t0 <*> poi g t1
+poi _ (RA "0") = Just P0
+poi _ (RA "1") = Just P1
+poi g@(is, _) (RA i) = foldr checkVar Nothing is where
+  checkVar here there
+     | i == here = Just pzero
+     | otherwise = psuc <$> there
+poi g (MepR m []) = pure (PM m B0 (P P0 P1))
+poi g (MepR m [] :$ rs) =
+  PM m <$> traverse (poi g) (fromList rs) <*> pure (P P0 P1)
+poi g (r :! rrs) = foldl scale <$> poi g r <*> (outB <$> traverse (poi g) rrs)
 poi _ _ = Nothing
-
 
 ------------------------------------------------------------------------------
 -- for testing in the repl
