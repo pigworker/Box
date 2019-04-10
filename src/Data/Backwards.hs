@@ -34,7 +34,7 @@ iterate :: (a -> a) -> a -> Bwd a
 iterate f = go where go x = go (f x) :< x
 
 lookup :: Eq a => a -> Bwd (a, b) -> Maybe b
-lookup x = foldr (\ (y, b) acc -> if x == y then Just b else acc) Nothing
+lookup x = foldl (\ acc (y, b) -> if x == y then Just b else acc) Nothing
 
 elemAt :: Int -> Bwd a -> Maybe a
 elemAt _ B0        = Nothing

@@ -351,9 +351,10 @@ data Syn
   deriving Show
 
 syn :: Scope -> Raw -> Maybe Syn
-syn (_, xs) (RA x) = Var <$> foldr checkVar Nothing xs where
-  checkVar here there | x == here = Just 0
-                      | otherwise = (1+) <$> there
+syn (_, xs) (RA x) = Var <$> foldl checkVar Nothing xs where
+  checkVar there here
+    | x == here = Just 0
+    | otherwise = (1+) <$> there
 syn g (RadR t ty) = Rad <$> chk g t <*> chk g ty
 syn g (r :$ rs) = foldl (:/) <$> syn g r <*> traverse (chk g) rs
 syn _ _ = Nothing
@@ -364,10 +365,10 @@ syn _ _ = Nothing
 poi :: Scope -> Raw -> Maybe Poi
 poi _ (RA "0") = Just P0
 poi _ (RA "1") = Just P1
-poi g@(is, _) (RA i) = foldr checkVar Nothing is where
-  checkVar here there
-     | i == here = Just pzero
-     | otherwise = psuc <$> there
+poi g@(is, _) (RA i) = foldl checkVar Nothing is where
+  checkVar there here
+    | i == here = Just pzero
+    | otherwise = psuc <$> there
 poi g (MepR m []) = pure (PM m B0 (P P0 P1))
 poi g (MepR m [] :$ rs) =
   PM m <$> traverse (poi g) (fromList rs) <*> pure (P P0 P1)
