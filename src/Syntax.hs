@@ -21,7 +21,6 @@ import Data.Either
 import Control.Applicative
 import Control.Monad
 
-
 ------------------------------------------------------------------------------
 -- Lexical Structure
 ------------------------------------------------------------------------------
@@ -46,7 +45,7 @@ isSym c =
   not (isAlphaNum c) &&
   not (elem c "({[)]}") &&
   not (elem c solo)
-  
+
 -- detect open brackets
 getOpen :: Char -> Maybe Brk
 getOpen '(' = Just Round
@@ -128,7 +127,6 @@ sep s p = (:) <$> p <*> more
   where
     more = (:) <$ eat (tok s) <*> p <*> more
        <|> pure []
-
 
 ------------------------------------------------------------------------------
 -- Raw unscoped syntax

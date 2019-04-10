@@ -67,7 +67,7 @@ match rr = go (-1, -1) where
     goes []       []       = Just mempty
     goes (p : ps) (t : ts) = mappend <$> go z p t <*> goes ps ts
     goes _        _        = Nothing
-    
+
 -- Length mismatch is usually a bug, not a failure, but we're open
 -- to overloading, so confuse away!
 -- Patterns are assumed to be linear. We must check that in user-given rules.
