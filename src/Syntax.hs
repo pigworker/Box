@@ -274,6 +274,10 @@ poid = B.iterate PS pzero
 syid :: Bwd Syn
 syid = Var <$> fromList [0..]
 
+-- Infinite identity substitution
+iidSb :: Sbsn
+iidSb = (poid, syid)
+
 -- Finite substitution, matching the size of a given scope
 idSb :: Scope -> Sbsn
 idSb (is, xs) =

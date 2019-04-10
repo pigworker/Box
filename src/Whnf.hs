@@ -29,22 +29,38 @@ import Syntax
 -- The type of Reduction systems (stub)
 ------------------------------------------------------------------------------
 
-data Reduction = Reduction
+data Reduction =
+  Reduction { redex  :: ((Pat, Pat), Pat)
+            , reduct :: (Chk, Chk)
+            }
   deriving Show
+
+type Reductions = [Reduction]
 
 ------------------------------------------------------------------------------
 -- weak-head-normalisation (stub)
 ------------------------------------------------------------------------------
 
-whnf :: Reduction -> Chk -> Chk
-whnf rr (Syn e) = case compute rr e of
-  Rad t _ _ -> t
-  e -> Syn e
-whnf rr t = t
+whnf :: Reductions -> Chk -> Chk
+whnf rr = goChk where
 
-compute :: Reduction -> Syn -> Syn
-compute rr e = e -- not really
+  goChk :: Chk -> Chk
+  goChk (Syn e) = case goSyn e of
+    Rad t _ -> t
+    e'      -> Syn e'
+  goChk t = t
 
+  goSyn :: Syn -> Syn
+  goSyn (Var v)    = Var v
+  goSyn (Rad t ty) = Rad (goChk t) (goChk ty)
+  goSyn (e :/ s)   = case goSyn e of
+    Rad t ty
+      | [(t', ty')] <- [ (t' ?% (iidSb, st) , ty' ?% (iidSb, st))
+                       | (Reduction ((pt, pty), ps) (t', ty')) <- rr
+                       , let Just st = matches rr [pt,pty,ps] [t,ty,s]
+                       ]
+       -> Rad t' ty'
+    e' -> e' :/ s
 
 ------------------------------------------------------------------------------
 -- Pattern Matching
@@ -52,7 +68,7 @@ compute rr e = e -- not really
 
 type Stan = (Bwd (String, Poi), Bwd (String, Chk))
 
-match :: Reduction -> Pat -> Chk -> Maybe Stan
+match :: Reductions -> Pat -> Chk -> Maybe Stan
 match rr = go (-1, -1) where
   go :: Thng -> Pat -> Chk -> Maybe Stan
   go (dh', th') (PMet x (dh, th)) t = do
@@ -68,6 +84,12 @@ match rr = go (-1, -1) where
     (Pat0,      Poi P0)            -> Just mempty
     (Pat1,      Poi P1)            -> Just mempty
     _ -> Nothing
+
+matches :: Reductions -> [Pat] -> [Chk] -> Maybe Stan
+matches rr ps ts = do
+  mstans <- syncWith (match rr) (fromList ps) (fromList ts)
+  stans  <- sequence mstans
+  pure $ fold stans
 
 -- Length mismatch is usually a bug, not a failure, but we're open
 -- to overloading, so confuse away!
