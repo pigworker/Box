@@ -78,25 +78,32 @@ match rr = go (-1, -1) where
 ------------------------------------------------------------------------------
 
 class Inst t where
-  (?%) :: t -> Stan -> t
+  (?%) :: t         -- term over Delta
+       -> ( Sbsn    -- mapping of metas to terms over Gamma, X
+          , Stan    -- substitution from Gamma to Delta
+          )
+       -> t         -- term over Delta
 
 instance Inst Chk where
-  (m :? sb) ?% st@(_, mvs)
-    | Just v <- lookup m mvs = v % (sb ?% st)
-    | otherwise = m :? (sb ?% st)
-  Can c ts  ?% st = Can c (ts ?% st)
-  Syn e     ?% st = Syn (e ?% st)
+  (m :? sb) ?% sbst@(sb', (_, mvs))
+    | Just v <- lookup m mvs = v % mappend sb' (sb ?% sbst)
+    | otherwise = m :? (sb ?% sbst)
+  Can c ts  ?% sbst = Can c (ts ?% sbst)
+  Abs t     ?% ((ps, es), st) = Abs (t ?% ((ps, susys es), st))
+  HiD t     ?% ((ps, es), st) = Abs (t ?% ((supos ps, es), st))
+  Syn e     ?% sbst = Syn (e ?% sbst)
+  Poi p     ?% sbst = Poi (p ?% sbst)
 
 instance Inst Syn where
-  Var i       ?% mvs = Var i
-  (e :/ s)    ?% mvs = (e ?% mvs) :/ (s ?% mvs)
-  Rad t ts ty ?% mvs = Rad (t ?% mvs) (ts ?% mvs) (ty ?% mvs)
+  Var i       ?% sbst = Var i
+  (e :/ s)    ?% sbst = (e ?% sbst) :/ (s ?% sbst)
+  Rad t ts ty ?% sbst = Rad (t ?% sbst) (ts ?% sbst) (ty ?% sbst)
 
 instance Inst Poi where
-  PM m ps pp ?% st@(mds, _)
+  PM m ps pp ?% sbst@(sb, (mds, _))
     | Just d <- lookup m mds =
-      scale (d % (ps ?% st, [])) (pp ?% st)
-    | otherwise = PM m (ps ?% st) (pp ?% st)
+      scale (d % mappend sb (ps ?% sbst, [])) (pp ?% sbst)
+    | otherwise = PM m (ps ?% sbst) (pp ?% sbst)
   p ?% _ = p
 
 instance Inst x => Inst [x] where
@@ -121,13 +128,17 @@ instance Sbst Chk where
   Poi p     % sb       = Poi (p % sb)
   (m :? ts) % sb       = m :? (ts % sb)
 
+susys :: [Syn] -> [Syn]
+susys es = es ^ (-1, -2)    -- -1 identity on dims; -2 shifts vars
 wksys :: [Syn] -> [Syn]
 wksys es = Var 0            -- top de Bruijn variable
-         : (es ^ (-1, -2))  -- -1 identity on dims; -2 shifts vars
+         : susys es 
 
+supos :: [Poi] -> [Poi]
+supos ps = ps ^ (-2, -1)    -- -2 shifts dims; -1 identity on vars (so what?)
 wkpos :: [Poi] -> [Poi]
 wkpos ps = pzero            -- top dimension
-         : (ps ^ (-2, -1))  -- -2 shifts dims; -1 identity on vars (so what?)
+         : supos ps
 
 instance Sbst Syn where
   Var i       % (_, es) = es !! i
