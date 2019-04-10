@@ -79,14 +79,14 @@ match rr = go (-1, -1) where
 
 class Inst t where
   (?%) :: t         -- term over Delta
-       -> ( Sbsn    -- mapping of metas to terms over Gamma, X
-          , Stan    -- substitution from Gamma to Delta
+       -> ( Sbsn    -- substitution from Gamma to Delta
+          , Stan    -- mapping of metas to terms over Gamma, X
           )
        -> t         -- term over Delta
 
 instance Inst Chk where
   (m :? sb) ?% sbst@(sb', (_, mvs))
-    | Just v <- lookup m mvs = v % mappend sb' (sb ?% sbst)
+    | Just v <- lookup m mvs = v % mappend (sb ?% sbst) sb'
     | otherwise = m :? (sb ?% sbst)
   Can c ts  ?% sbst = Can c (ts ?% sbst)
   Abs t     ?% ((ps, es), st) = Abs (t ?% ((ps, susys es), st))
@@ -102,7 +102,7 @@ instance Inst Syn where
 instance Inst Poi where
   PM m ps pp ?% sbst@(sb, (mds, _))
     | Just d <- lookup m mds =
-      scale (d % mappend sb (ps ?% sbst, [])) (pp ?% sbst)
+      scale (d % mappend (ps ?% sbst, []) sb) (pp ?% sbst)
     | otherwise = PM m (ps ?% sbst) (pp ?% sbst)
   p ?% _ = p
 
